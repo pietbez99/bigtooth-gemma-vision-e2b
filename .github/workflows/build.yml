@@ -1,0 +1,89 @@
+name: Build & Push to GHCR
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Free up disk space
+        # The standard ubuntu-latest runner has ~14GB free on /. The Gemma
+        # model alone is ~16GB, plus base image + deps + build overhead means
+        # we need ~40GB headroom. Strip everything non-essential.
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Relocate Docker + BuildKit to /mnt
+        # /mnt has ~60GB free on the standard runner. Docker and BuildKit
+        # default to / which only has ~20GB after cleanup. Move the data
+        # roots to /mnt so the 26GB build image fits.
+        run: |
+          sudo systemctl stop docker docker.socket
+          sudo mkdir -p /mnt/docker /mnt/buildkit
+          sudo mv /var/lib/docker /mnt/docker/data || true
+          sudo ln -s /mnt/docker/data /var/lib/docker
+          sudo mkdir -p /mnt/buildkit/data
+          sudo ln -s /mnt/buildkit/data /var/lib/buildkit || true
+          sudo systemctl start docker
+          df -h
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Disk space after setup
+        run: df -h
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            network=host
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            HF_TOKEN=${{ secrets.HF_TOKEN }}
+          # Use inline cache (embedded in the pushed image) rather than the GHA
+          # cache backend — the model weight layer is 16GB and would blow the
+          # 10GB per-repo GHA cache budget in one run anyway.
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache,mode=max
