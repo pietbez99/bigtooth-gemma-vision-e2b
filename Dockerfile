@@ -55,4 +55,29 @@ RUN du -sh /root/.cache/huggingface && ls -la /root/.cache/huggingface/hub/
 
 COPY handler.py /app/handler.py
 
-CMD ["python", "-u", "/app/handler.py"]
+# Diagnostic CMD: print env state before invoking the handler so we can see
+# WHERE in startup the container is dying. Previous build (commit 3726cda)
+# silently failed before producing any Python output — likely a python-path
+# or torch-import problem with the new cu128 base image.
+#
+# Once we have a clean working baseline, this can be simplified back to:
+#   CMD ["python", "-u", "/app/handler.py"]
+CMD ["/bin/bash", "-c", "\
+echo '=== [BOOT] container start ==='; \
+echo '=== [BOOT] uname ==='; uname -a; \
+echo '=== [BOOT] python locations ==='; \
+which python python3 python3.11 python3.12 2>&1 || true; \
+echo '=== [BOOT] python --version ==='; \
+python --version 2>&1 || echo 'python NOT FOUND'; \
+python3 --version 2>&1 || echo 'python3 NOT FOUND'; \
+echo '=== [BOOT] torch import test ==='; \
+python -c 'import torch; print(f\"torch={torch.__version__}, cuda_available={torch.cuda.is_available()}, device_count={torch.cuda.device_count()}\"); print(f\"cuda_version_compiled={torch.version.cuda}\")' 2>&1 || python3 -c 'import torch; print(f\"torch={torch.__version__}, cuda_available={torch.cuda.is_available()}, device_count={torch.cuda.device_count()}\"); print(f\"cuda_version_compiled={torch.version.cuda}\")' 2>&1 || echo 'torch IMPORT FAILED'; \
+echo '=== [BOOT] transformers import test ==='; \
+python -c 'import transformers; print(f\"transformers={transformers.__version__}\")' 2>&1 || python3 -c 'import transformers; print(f\"transformers={transformers.__version__}\")' 2>&1 || echo 'transformers IMPORT FAILED'; \
+echo '=== [BOOT] runpod import test ==='; \
+python -c 'import runpod; print(f\"runpod={runpod.__version__ if hasattr(runpod, \\\"__version__\\\") else \\\"<no version attr>\\\"}\")' 2>&1 || python3 -c 'import runpod; print(f\"runpod={runpod.__version__ if hasattr(runpod, \\\"__version__\\\") else \\\"<no version attr>\\\"}\")' 2>&1 || echo 'runpod IMPORT FAILED'; \
+echo '=== [BOOT] handler.py exists check ==='; \
+ls -la /app/handler.py 2>&1; \
+echo '=== [BOOT] handing off to handler ==='; \
+exec python -u /app/handler.py 2>&1 || exec python3 -u /app/handler.py 2>&1 || { echo 'FAILED TO LAUNCH HANDLER'; sleep 5; exit 1; }\
+"]
