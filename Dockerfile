@@ -2,8 +2,15 @@
 # Replaces Qwen2-VL-7B-Instruct for brushing session review
 # Model: google/gemma-4-E2B-it (Apache 2.0 license, ~2B active / ~5B effective params)
 # Model is baked into the image at build time to avoid cold-start downloads.
+#
+# CUDA 12.8 / sm_120 (Blackwell) support: RunPod has silently started
+# allocating Blackwell hardware (RTX 5090, PRO 6000) under existing tier
+# codes that used to mean Ampere/Ada-only. The previous cu124 image crashed
+# immediately on any Blackwell allocation with "no kernel image available
+# for execution on the device". This build targets cu128 to support all
+# current Nvidia generations from Ampere through Blackwell.
 
-FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
+FROM runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404
 
 ENV PYTHONUNBUFFERED=1
 ENV HF_HOME=/root/.cache/huggingface
@@ -17,9 +24,11 @@ WORKDIR /app
 # transformers must be >=5.5.0 — that's the first stable release with full
 # Gemma 4 support. Older versions (4.x) produce a partially-initialized model
 # with missing lm_head weights and random attention layers.
+#
+# Note: torch is provided by the base image (RunPod's cu128 base ships
+# PyTorch 2.8.0 prebuilt for sm_90 + sm_120). We do NOT pip install torch
+# explicitly to avoid risking a wheel-version mismatch with the base.
 RUN pip install --upgrade pip && \
-    pip install --no-cache-dir \
-    torch==2.5.1 torchvision --index-url https://download.pytorch.org/whl/cu124 && \
     pip install --no-cache-dir \
     "transformers>=5.5.0,<5.6" \
     "accelerate>=0.33.0" \
