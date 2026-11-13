@@ -48,13 +48,42 @@ def load_model():
     print(f"Model loaded successfully ({param_count:.2f}B params).")
 
 
-def download_image(url):
+# Audit 13 Nov 2026 (ChatGPT review): photo addresses carry a download token, so they are never logged; only Firebase
+# Storage hosts are fetched; downloads and decoded images are capped.
+ALLOWED_PHOTO_HOSTS = ("firebasestorage.googleapis.com", "storage.googleapis.com")
+MAX_PHOTO_BYTES = 15 * 1024 * 1024
+Image.MAX_IMAGE_PIXELS = 40_000_000  # ~6300x6300; phone photos are far smaller
+
+
+def _host(url):
     try:
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
-        return Image.open(BytesIO(response.content)).convert("RGB")
+        from urllib.parse import urlparse
+        return urlparse(url).hostname or "?"
+    except Exception:
+        return "?"
+
+
+def download_image(url):
+    host = _host(url) if isinstance(url, str) else "?"
+    if not isinstance(url, str) or not url.startswith("https://") or host not in ALLOWED_PHOTO_HOSTS:
+        print(f"Refused photo address (host {host}): only Firebase Storage is fetched")
+        return None
+    try:
+        with requests.get(url, timeout=30, stream=True) as response:
+            response.raise_for_status()
+            data = bytearray()
+            for chunk in response.iter_content(64 * 1024):
+                data.extend(chunk)
+                if len(data) > MAX_PHOTO_BYTES:
+                    print(f"Photo too large (> {MAX_PHOTO_BYTES // (1024 * 1024)} MB) from {host}")
+                    return None
+        return Image.open(BytesIO(bytes(data))).convert("RGB")
+    except requests.HTTPError as e:
+        status = getattr(e.response, "status_code", "?")
+        print(f"Error downloading a photo from {host}: HTTP {status}")
+        return None
     except Exception as e:
-        print(f"Error downloading image from {url}: {e}")
+        print(f"Error downloading a photo from {host}: {type(e).__name__}")
         return None
 
 
